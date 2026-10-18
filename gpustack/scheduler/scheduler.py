@@ -535,8 +535,20 @@ class Scheduler:
                     # Back in the queue means holding nothing. The exclusion a
                     # few lines down only drops the claim of the instance being
                     # placed; a sibling that came back here keeps its own, and
-                    # every later attempt is measured against it.
+                    # every later attempt is measured against it. The worker
+                    # assignment and subordinate claims go too: a pending row
+                    # is only retried while it has no worker_id, and subordinate
+                    # claims are counted regardless of state.
                     model_instance.computed_resource_claim = None
+                    model_instance.worker_id = None
+                    model_instance.worker_name = None
+                    model_instance.worker_ip = None
+                    model_instance.worker_advertise_address = None
+                    model_instance.worker_ifname = None
+                    model_instance.gpu_type = None
+                    model_instance.gpu_indexes = []
+                    model_instance.gpu_addresses = []
+                    model_instance.distributed_servers = None
                 if state_message != "":
                     model_instance.state_message = state_message
 
