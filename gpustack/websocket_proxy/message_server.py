@@ -559,16 +559,22 @@ class MessageServerHandler:
 
         client_id = client_info.client_id
         invalid = _invalid_client_claims(client_info)
-        invalid += self._foreign_cidr_claims(client_id, client_info.cidrs)
+        foreign = self._foreign_cidr_claims(client_id, client_info.cidrs)
+        unauthorized = []
         if authorized_addresses is not None:
-            invalid += [
+            unauthorized = [
                 cidr
                 for cidr in client_info.cidrs
                 if not _authorized_host_route(cidr, authorized_addresses)
             ]
-        if invalid:
+        if invalid or foreign or unauthorized:
+            owners = {
+                cidr: str(self._cidr_registry.find_exact(cidr)) for cidr in foreign
+            }
             logger.warning(
-                f"[Server] Rejecting client {client_id} with out-of-policy claims: {invalid}"
+                f"[Server] Rejecting client {client_id} with out-of-policy claims: "
+                f"invalid={invalid}, unauthorized={unauthorized}, "
+                f"already owned by another client={owners}"
             )
             await websocket.close(
                 code=1008, reason="invalid client registration claims"
@@ -592,15 +598,25 @@ class MessageServerHandler:
             f"[Server] Client registered via WS: {client_id}, CIDRs: {cidr_list}"
         )
 
-        # Broadcast new client to peers
-        await self.broadcast_client_update("add", client_id, cidr_list, socket_list)
+        entered_handle_client = False
+        try:
+            # Broadcast new client to peers
+            await self.broadcast_client_update("add", client_id, cidr_list, socket_list)
 
-        # Get generation for this connection (used to filter stale disconnect callbacks)
-        generation = await self._get_next_generation(client_id)
+            # Get generation for this connection (used to filter stale disconnect callbacks)
+            generation = await self._get_next_generation(client_id)
 
-        if self._callback_on_connect:
-            await self._safe_callback(self._callback_on_connect, None, client_info)
-        await self.handle_client(websocket, client_id, generation)
+            if self._callback_on_connect:
+                await self._safe_callback(self._callback_on_connect, None, client_info)
+            entered_handle_client = True
+            await self.handle_client(websocket, client_id, generation)
+        finally:
+            if not entered_handle_client:
+                # handle_client's own cleanup never ran; release the claims
+                # so they do not block the client's later reconnects.
+                self._cidr_registry.remove_client(client_id)
+                self.client_registry.pop(client_id, None)
+                self.connection_managers.pop(client_id, None)
 
     async def handle_server_federation(
         self,

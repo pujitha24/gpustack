@@ -448,3 +448,35 @@ class TestRouteOwnership:
 
         assert attacker_id not in handler.client_registry
         assert handler._cidr_registry.find_exact("10.0.0.5/32") == victim_id
+
+
+class TestClaimRelease:
+    """A claim never outlives a connection that failed before serving."""
+
+    @pytest.mark.asyncio
+    async def test_claims_released_when_setup_fails_before_serving(self):
+        handler = _handler()
+        handler.broadcast_client_update = AsyncMock(side_effect=RuntimeError("boom"))
+        client_id = uuid.uuid4()
+        client_info = RegisteredClientInfo(
+            client_id=client_id, cidrs=["10.0.0.5/32"], unix_sockets=[]
+        )
+
+        with pytest.raises(RuntimeError):
+            await handler.handle_client_connection(_websocket({}), client_info)
+
+        assert handler._cidr_registry.find_exact("10.0.0.5/32") is None
+        assert client_id not in handler.client_registry
+        assert client_id not in handler.connection_managers
+
+        # A different client can now claim the same address.
+        other_ws = _websocket({})
+        other_ws.receive = AsyncMock(side_effect=[{"type": "websocket.disconnect"}])
+        handler.broadcast_client_update = AsyncMock()
+        await handler.handle_client_connection(
+            other_ws,
+            RegisteredClientInfo(
+                client_id=uuid.uuid4(), cidrs=["10.0.0.5/32"], unix_sockets=[]
+            ),
+        )
+        other_ws.close.assert_not_awaited()
